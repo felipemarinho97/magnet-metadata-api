@@ -1,0 +1,668 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Magnet Metadata Service</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 3rem;
+            color: white;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.3);
+        }
+
+        .header p {
+            font-size: 1.1rem;
+            opacity: 0.9;
+        }
+
+        .main-card {
+            background: white;
+            border-radius: 20px;
+            padding: 2.5rem;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            backdrop-filter: blur(10px);
+            margin-bottom: 2rem;
+        }
+
+        .input-section {
+            margin-bottom: 2rem;
+        }
+
+        .input-group {
+            position: relative;
+            margin-bottom: 1.5rem;
+        }
+
+        .input-group label {
+            display: block;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+            color: #4a5568;
+        }
+
+        .magnet-input {
+            width: 100%;
+            padding: 1rem 1.5rem;
+            border: 2px solid #e2e8f0;
+            border-radius: 12px;
+            font-size: 1rem;
+            transition: all 0.3s ease;
+            background: #f8fafc;
+        }
+
+        .magnet-input:focus {
+            outline: none;
+            border-color: #667eea;
+            background: white;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .submit-btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 1rem 2rem;
+            border-radius: 12px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            min-width: 140px;
+            justify-content: center;
+        }
+
+        .submit-btn:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+        }
+
+        .submit-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .loading {
+            display: none;
+            width: 20px;
+            height: 20px;
+            border: 2px solid transparent;
+            border-top: 2px solid currentColor;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .results-section {
+            display: none;
+            animation: slideIn 0.5s ease-out;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .metadata-card {
+            background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+            border-radius: 16px;
+            padding: 2rem;
+            margin-bottom: 2rem;
+            border: 1px solid #e2e8f0;
+        }
+
+        .metadata-header {
+            display: flex;
+            justify-content: between;
+            align-items: start;
+            margin-bottom: 1.5rem;
+            flex-wrap: wrap;
+            gap: 1rem;
+        }
+
+        .metadata-title {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .metadata-title h2 {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #2d3748;
+            margin-bottom: 0.5rem;
+            word-break: break-word;
+        }
+
+        .metadata-hash {
+            font-family: 'Courier New', monospace;
+            font-size: 0.9rem;
+            color: #718096;
+            background: white;
+            padding: 0.5rem 1rem;
+            border-radius: 8px;
+            word-break: break-all;
+        }
+
+        .download-btn {
+            background: linear-gradient(135deg, #48bb78 0%, #38a169 100%);
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 10px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .download-btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(72, 187, 120, 0.3);
+        }
+
+        .metadata-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .metadata-item {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 12px;
+            border: 1px solid #e2e8f0;
+        }
+
+        .metadata-item h3 {
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: #718096;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 0.5rem;
+        }
+
+        .metadata-item p {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #2d3748;
+        }
+
+        .files-section {
+            margin-top: 2rem;
+        }
+
+        .files-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+
+        .files-header h3 {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: #2d3748;
+        }
+
+        .file-count {
+            background: #667eea;
+            color: white;
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.875rem;
+            font-weight: 600;
+        }
+
+        .files-list {
+            max-height: 400px;
+            overflow-y: auto;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            background: white;
+        }
+
+        .file-item {
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid #f7fafc;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: background-color 0.2s ease;
+        }
+
+        .file-item:hover {
+            background: #f8fafc;
+        }
+
+        .file-item:last-child {
+            border-bottom: none;
+        }
+
+        .file-name {
+            font-weight: 500;
+            color: #2d3748;
+            flex: 1;
+            margin-right: 1rem;
+            word-break: break-word;
+        }
+
+        .file-size {
+            font-size: 0.875rem;
+            color: #718096;
+            font-weight: 500;
+            white-space: nowrap;
+        }
+
+        .trackers-section {
+            margin-top: 2rem;
+            background: white;
+            padding: 1.5rem;
+            border-radius: 12px;
+            border: 1px solid #e2e8f0;
+        }
+
+        .trackers-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+
+        .trackers-header h3 {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: #2d3748;
+        }
+
+        .tracker-count {
+            background: #ed8936;
+            color: white;
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.875rem;
+            font-weight: 600;
+        }
+
+        .trackers-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+
+        .tracker-item {
+            background: #f7fafc;
+            padding: 0.5rem 1rem;
+            border-radius: 8px;
+            font-size: 0.875rem;
+            color: #4a5568;
+            border: 1px solid #e2e8f0;
+            word-break: break-all;
+        }
+
+        .error-message {
+            background: linear-gradient(135deg, #fed7d7 0%, #feb2b2 100%);
+            color: #c53030;
+            padding: 1rem 1.5rem;
+            border-radius: 12px;
+            margin-bottom: 1rem;
+            border: 1px solid #feb2b2;
+        }
+
+        .error-message strong {
+            display: block;
+            margin-bottom: 0.5rem;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 1rem;
+            }
+
+            .header h1 {
+                font-size: 2rem;
+            }
+
+            .main-card {
+                padding: 1.5rem;
+            }
+
+            .metadata-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .metadata-header {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .file-item {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 0.5rem;
+            }
+
+            .file-size {
+                align-self: flex-end;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <h1>🧲 Magnet Metadata Service</h1>
+            <p>Extract detailed metadata from magnet links instantly</p>
+        </header>
+
+        <div class="main-card">
+            <div class="input-section">
+                <div class="input-group">
+                    <label for="magnetInput">Magnet URI</label>
+                    <input 
+                        type="text" 
+                        id="magnetInput" 
+                        class="magnet-input" 
+                        placeholder="magnet:?xt=urn:btih:..."
+                        autocomplete="off"
+                    >
+                </div>
+                <button id="submitBtn" class="submit-btn">
+                    <span class="btn-text">Get Metadata</span>
+                    <div class="loading"></div>
+                </button>
+            </div>
+
+            <div id="errorSection" class="error-section"></div>
+
+            <div id="resultsSection" class="results-section">
+                <div class="metadata-card">
+                    <div class="metadata-header">
+                        <div class="metadata-title">
+                            <h2 id="torrentName">Loading...</h2>
+                            <div class="metadata-hash" id="torrentHash"></div>
+                        </div>
+                        <a id="downloadBtn" class="download-btn" style="display: none;">
+                            <span>📥 Download .torrent</span>
+                        </a>
+                    </div>
+
+                    <div class="metadata-grid">
+                        <div class="metadata-item">
+                            <h3>Total Size</h3>
+                            <p id="torrentSize">-</p>
+                        </div>
+                        <div class="metadata-item">
+                            <h3>Files Count</h3>
+                            <p id="filesCount">-</p>
+                        </div>
+                        <div class="metadata-item">
+                            <h3>Created At</h3>
+                            <p id="createdAt">-</p>
+                        </div>
+                        <div class="metadata-item">
+                            <h3>Comment</h3>
+                            <p id="torrentComment">-</p>
+                        </div>
+                    </div>
+
+                    <div class="files-section">
+                        <div class="files-header">
+                            <h3>Files</h3>
+                            <span class="file-count" id="fileCountBadge">0</span>
+                        </div>
+                        <div class="files-list" id="filesList">
+                            <!-- Files will be populated here -->
+                        </div>
+                    </div>
+
+                    <div class="trackers-section" id="trackersSection">
+                        <div class="trackers-header">
+                            <h3>Trackers</h3>
+                            <span class="tracker-count" id="trackerCountBadge">0</span>
+                        </div>
+                        <div class="trackers-list" id="trackersList">
+                            <!-- Trackers will be populated here -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        class MagnetMetadataUI {
+            constructor() {
+                this.apiBase = '/api/v1';
+                this.initializeElements();
+                this.bindEvents();
+            }
+
+            initializeElements() {
+                this.magnetInput = document.getElementById('magnetInput');
+                this.submitBtn = document.getElementById('submitBtn');
+                this.btnText = this.submitBtn.querySelector('.btn-text');
+                this.loading = this.submitBtn.querySelector('.loading');
+                this.errorSection = document.getElementById('errorSection');
+                this.resultsSection = document.getElementById('resultsSection');
+                
+                // Result elements
+                this.torrentName = document.getElementById('torrentName');
+                this.torrentHash = document.getElementById('torrentHash');
+                this.torrentSize = document.getElementById('torrentSize');
+                this.filesCount = document.getElementById('filesCount');
+                this.createdAt = document.getElementById('createdAt');
+                this.torrentComment = document.getElementById('torrentComment');
+                this.downloadBtn = document.getElementById('downloadBtn');
+                this.filesList = document.getElementById('filesList');
+                this.trackersList = document.getElementById('trackersList');
+                this.fileCountBadge = document.getElementById('fileCountBadge');
+                this.trackerCountBadge = document.getElementById('trackerCountBadge');
+                this.trackersSection = document.getElementById('trackersSection');
+            }
+
+            bindEvents() {
+                this.submitBtn.addEventListener('click', () => this.handleSubmit());
+                this.magnetInput.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') this.handleSubmit();
+                });
+                this.magnetInput.addEventListener('paste', (e) => {
+                    setTimeout(() => this.validateInput(), 100);
+                });
+                this.magnetInput.addEventListener('input', () => this.validateInput());
+            }
+
+            validateInput() {
+                const value = this.magnetInput.value.trim();
+                const isValid = value.startsWith('magnet:?xt=urn:btih:');
+                this.submitBtn.disabled = !isValid;
+            }
+
+            async handleSubmit() {
+                const magnetURI = this.magnetInput.value.trim();
+                if (!magnetURI) return;
+
+                this.setLoading(true);
+                this.clearError();
+
+                try {
+                    const response = await fetch(`${this.apiBase}/metadata`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ magnet_uri: magnetURI })
+                    });
+
+                    const data = await response.json();
+
+                    if (!response.ok) {
+                        throw new Error(data.message || 'Failed to get metadata');
+                    }
+
+                    this.displayResults(data);
+                } catch (error) {
+                    this.showError('Failed to get metadata', error.message);
+                } finally {
+                    this.setLoading(false);
+                }
+            }
+
+            displayResults(metadata) {
+                this.torrentName.textContent = metadata.name || 'Unknown';
+                this.torrentHash.textContent = metadata.info_hash || '';
+                this.torrentSize.textContent = this.formatBytes(metadata.size || 0);
+                this.filesCount.textContent = (metadata.files || []).length.toString();
+                this.createdAt.textContent = metadata.created_at ? 
+                    new Date(metadata.created_at).toLocaleString() : 'Unknown';
+                this.torrentComment.textContent = metadata.comment || 'None';
+
+                // Download button
+                if (metadata.download_url) {
+                    this.downloadBtn.href = metadata.download_url;
+                    this.downloadBtn.style.display = 'inline-flex';
+                } else {
+                    this.downloadBtn.style.display = 'none';
+                }
+
+                // Files
+                this.displayFiles(metadata.files || []);
+
+                // Trackers
+                this.displayTrackers(metadata.trackers || []);
+
+                this.resultsSection.style.display = 'block';
+                this.resultsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+
+            displayFiles(files) {
+                this.fileCountBadge.textContent = files.length.toString();
+                this.filesList.innerHTML = '';
+
+                if (files.length === 0) {
+                    this.filesList.innerHTML = '<div class="file-item">No files found</div>';
+                    return;
+                }
+
+                files.forEach(file => {
+                    const fileItem = document.createElement('div');
+                    fileItem.className = 'file-item';
+                    fileItem.innerHTML = `
+                        <div class="file-name">${this.escapeHtml(file.path || 'Unknown')}</div>
+                        <div class="file-size">${this.formatBytes(file.size || 0)}</div>
+                    `;
+                    this.filesList.appendChild(fileItem);
+                });
+            }
+
+            displayTrackers(trackers) {
+                this.trackerCountBadge.textContent = trackers.length.toString();
+                this.trackersList.innerHTML = '';
+
+                if (trackers.length === 0) {
+                    this.trackersSection.style.display = 'none';
+                    return;
+                }
+
+                this.trackersSection.style.display = 'block';
+                trackers.forEach(tracker => {
+                    const trackerItem = document.createElement('div');
+                    trackerItem.className = 'tracker-item';
+                    trackerItem.textContent = tracker;
+                    this.trackersList.appendChild(trackerItem);
+                });
+            }
+
+            setLoading(loading) {
+                if (loading) {
+                    this.submitBtn.disabled = true;
+                    this.btnText.textContent = 'Getting Metadata...';
+                    this.loading.style.display = 'block';
+                } else {
+                    this.submitBtn.disabled = false;
+                    this.btnText.textContent = 'Get Metadata';
+                    this.loading.style.display = 'none';
+                    this.validateInput(); // Re-validate to set correct disabled state
+                }
+            }
+
+            showError(title, message) {
+                this.errorSection.innerHTML = `
+                    <div class="error-message">
+                        <strong>${this.escapeHtml(title)}</strong>
+                        ${this.escapeHtml(message)}
+                    </div>
+                `;
+                this.errorSection.scrollIntoView({ behavior: 'smooth' });
+            }
+
+            clearError() {
+                this.errorSection.innerHTML = '';
+            }
+
+            formatBytes(bytes) {
+                if (bytes === 0) return '0 B';
+                const k = 1024;
+                const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+                const i = Math.floor(Math.log(bytes) / Math.log(k));
+                return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+            }
+
+            escapeHtml(text) {
+                const div = document.createElement('div');
+                div.textContent = text;
+                return div.innerHTML;
+            }
+        }
+
+        // Initialize the application
+        document.addEventListener('DOMContentLoaded', () => {
+            new MagnetMetadataUI();
+        });
+    </script>
+</body>
+</html>

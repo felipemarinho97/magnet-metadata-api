@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -235,6 +236,10 @@ func (ts *TorrentService) getTorrentMetadata(magnetURI string) (*model.TorrentMe
 		}
 		offset += file.Length
 	}
+	// Sort files by size (descending)
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].Size > files[j].Size
+	})
 
 	metadata := &model.TorrentMetadata{
 		InfoHash: infoHashStr,
@@ -332,8 +337,6 @@ func (ts *TorrentService) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"status": "ok",
 		"stats": map[string]interface{}{
 			"active_torrents": len(ts.client.Torrents()),
-			"cache_dir":       ts.config.CacheDir,
-			"seeding_enabled": ts.config.SeedingEnabled,
 		},
 	}
 
@@ -362,6 +365,10 @@ func (ts *TorrentService) SetupRoutes() *mux.Router {
 	if ts.config.EnableDownloads {
 		r.HandleFunc("/download/{hash}", ts.handleDownload).Methods("GET")
 	}
+
+	// Serve static files from /web at root path
+	fs := http.FileServer(http.Dir("web"))
+	r.PathPrefix("/").Handler(fs)
 
 	// Middleware
 	r.Use(func(next http.Handler) http.Handler {
