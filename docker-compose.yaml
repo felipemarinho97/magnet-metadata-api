@@ -15,7 +15,7 @@ services:
     restart: unless-stopped
     ports:
       - "8999:8080"
-      - "42069:42069"
+      - "42071:42071"
     environment:
       - PORT=8080
       - REDIS_URL=redis://redis:6379
@@ -25,7 +25,7 @@ services:
       - CLIENT_PORT=42069
       - SEEDING_ENABLED=true
     volumes:
-      - /mnt/ironwolf/torrent-2-magnet-cache:/home/torrent/cache
+      - ./cache:/home/torrent/cache
     depends_on:
       - redis
     healthcheck:
