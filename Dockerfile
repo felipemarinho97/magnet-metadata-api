@@ -33,6 +33,9 @@ WORKDIR /home/torrent
 # Copy binary from builder stage
 COPY --from=builder /app/main .
 
+# Copy static web files
+COPY --from=builder /app/web ./web
+
 # Create cache directory
 RUN mkdir -p ./cache && chown torrent:torrent ./cache
 

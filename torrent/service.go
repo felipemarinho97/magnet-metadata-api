@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -19,6 +18,7 @@ import (
 	"github.com/anacrolix/torrent/metainfo"
 	"github.com/felipemarinho97/torrent-2-magnet/config"
 	"github.com/felipemarinho97/torrent-2-magnet/model"
+	"github.com/felipemarinho97/torrent-2-magnet/util"
 	"github.com/go-redis/redis/v8"
 	"github.com/gorilla/mux"
 )
@@ -28,6 +28,7 @@ type TorrentService struct {
 	client      *torrent.Client
 	redisClient *redis.Client
 	ctx         context.Context
+	fileCount   int64
 }
 
 func NewTorrentService(config *config.Config) (*TorrentService, error) {
@@ -69,11 +70,18 @@ func NewTorrentService(config *config.Config) (*TorrentService, error) {
 		return nil, fmt.Errorf("failed to create torrent client: %w", err)
 	}
 
+	fileCount, err := util.CountDir(config.CacheDir)
+	if err != nil {
+		fmt.Printf("Warning: Failed to count cached files: %v. Using 0 as initial count.", err)
+		fileCount = 0
+	}
+
 	service := &TorrentService{
 		config:      config,
 		client:      client,
 		redisClient: redisClient,
 		ctx:         ctx,
+		fileCount:   fileCount,
 	}
 
 	return service, nil
@@ -90,38 +98,13 @@ func (ts *TorrentService) Close() error {
 }
 
 func (ts *TorrentService) parseMagnetURI(magnetURI string) (metainfo.Hash, error) {
-	u, err := url.Parse(magnetURI)
+	magnet, err := metainfo.ParseMagnetUri(magnetURI)
 	if err != nil {
-		return metainfo.Hash{}, fmt.Errorf("invalid magnet URI: %w", err)
+		return metainfo.Hash{}, fmt.Errorf("failed to parse magnet URI: %w", err)
 	}
-
-	if u.Scheme != "magnet" {
-		return metainfo.Hash{}, fmt.Errorf("not a magnet URI")
-	}
-
-	params := u.Query()
-	xt := params.Get("xt")
-	if xt == "" {
-		return metainfo.Hash{}, fmt.Errorf("missing xt parameter")
-	}
-
-	if !strings.HasPrefix(xt, "urn:btih:") {
-		return metainfo.Hash{}, fmt.Errorf("unsupported xt format")
-	}
-
-	hashStr := strings.TrimPrefix(xt, "urn:btih:")
 
 	var infoHash metainfo.Hash
-	if len(hashStr) == 40 {
-		// SHA1 hex format
-		hashBytes, err := hex.DecodeString(hashStr)
-		if err != nil {
-			return metainfo.Hash{}, fmt.Errorf("invalid hex hash: %w", err)
-		}
-		copy(infoHash[:], hashBytes)
-	} else {
-		return metainfo.Hash{}, fmt.Errorf("unsupported hash format")
-	}
+	infoHash = magnet.InfoHash
 
 	return infoHash, nil
 }
@@ -167,10 +150,6 @@ func (ts *TorrentService) cacheMetadata(metadata *model.TorrentMetadata) error {
 }
 
 func (ts *TorrentService) saveTorrentFile(t *torrent.Torrent, infoHashStr string) error {
-	if !ts.config.EnableDownloads {
-		return nil // Don't save torrent files if downloads are disabled
-	}
-
 	// Save the .torrent file to cache
 	torrentPath := filepath.Join(ts.config.CacheDir, infoHashStr+".torrent")
 
@@ -208,6 +187,7 @@ func (ts *TorrentService) getTorrentMetadata(magnetURI string) (*model.TorrentMe
 		return nil, fmt.Errorf("failed to add magnet: %w", err)
 	}
 
+	t.DisallowDataDownload()
 	// Wait for info with timeout
 	select {
 	case <-t.GotInfo():
@@ -216,9 +196,6 @@ func (ts *TorrentService) getTorrentMetadata(magnetURI string) (*model.TorrentMe
 		t.Drop()
 		return nil, fmt.Errorf("timeout waiting for torrent info")
 	}
-
-	// IMMEDIATELY drop the torrent after getting metadata to prevent downloading
-	defer t.Drop()
 
 	// Extract metadata
 	info := t.Info()
@@ -263,10 +240,10 @@ func (ts *TorrentService) getTorrentMetadata(magnetURI string) (*model.TorrentMe
 
 	// Add download URL if enabled
 	if ts.config.EnableDownloads {
-		downloadURL := fmt.Sprintf("%s/download/%s",
-			strings.TrimSuffix(ts.config.DownloadBaseURL, "/"),
-			infoHashStr)
+		downloadURL := fmt.Sprintf("/download/%s", infoHashStr)
 		metadata.DownloadURL = &downloadURL
+	} else {
+		metadata.DownloadURL = nil
 	}
 
 	// Save the .torrent file before dropping
@@ -336,7 +313,7 @@ func (ts *TorrentService) handleHealth(w http.ResponseWriter, r *http.Request) {
 	health := map[string]interface{}{
 		"status": "ok",
 		"stats": map[string]interface{}{
-			"active_torrents": len(ts.client.Torrents()),
+			"active_torrents": len(ts.client.Torrents()) + int(ts.fileCount),
 		},
 	}
 
