@@ -20,7 +20,7 @@ services:
       - PORT=8080
       - REDIS_URL=redis://redis:6379
       - CACHE_DIR=/home/torrent/cache
-      - ENABLE_DOWNLOADS=true
+      - ENABLE_DOWNLOADS=false
       - DOWNLOAD_BASE_URL=http://localhost:8080
       - CLIENT_PORT=42069
       - SEEDING_ENABLED=true
