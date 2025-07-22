@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:latest
+    container_name: torrent-redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+
+  torrent-api:
+    build: .
+    container_name: torrent-metadata-api
+    restart: unless-stopped
+    ports:
+      - "8999:8080"
+      - "42069:42069"
+    environment:
+      - PORT=8080
+      - REDIS_URL=redis://redis:6379
+      - CACHE_DIR=/home/torrent/cache
+      - ENABLE_DOWNLOADS=true
+      - DOWNLOAD_BASE_URL=http://localhost:8080
+      - CLIENT_PORT=42069
+      - SEEDING_ENABLED=true
+    volumes:
+      - /mnt/ironwolf/torrent-2-magnet-cache:/home/torrent/cache
+    depends_on:
+      - redis
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  redis_data:
