@@ -42,6 +42,70 @@
             opacity: 0.9;
         }
 
+        .stats-card {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 16px;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+        }
+
+        .stat-item {
+            text-align: center;
+            padding: 1rem;
+            background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+            border-radius: 12px;
+            border: 1px solid #e2e8f0;
+        }
+
+        .stat-value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: #2d3748;
+            margin-bottom: 0.25rem;
+        }
+
+        .stat-label {
+            font-size: 0.875rem;
+            color: #718096;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .status-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.875rem;
+            font-weight: 500;
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            background: #48bb78;
+            color: white;
+        }
+
+        .status-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: currentColor;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
         .main-card {
             background: white;
             border-radius: 20px;
@@ -266,7 +330,7 @@
             background: white;
         }
 
-        .file-item {
+        .file-item, .directory-item {
             padding: 1rem 1.5rem;
             border-bottom: 1px solid #f7fafc;
             display: flex;
@@ -275,19 +339,33 @@
             transition: background-color 0.2s ease;
         }
 
-        .file-item:hover {
+        .file-item:hover, .directory-item:hover {
             background: #f8fafc;
         }
 
-        .file-item:last-child {
+        .file-item:last-child, .directory-item:last-child {
             border-bottom: none;
+        }
+
+        .file-info {
+            flex: 1;
+            margin-right: 1rem;
+            min-width: 0;
         }
 
         .file-name {
             font-weight: 500;
             color: #2d3748;
-            flex: 1;
-            margin-right: 1rem;
+            word-break: break-word;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .file-path {
+            font-size: 0.875rem;
+            color: #718096;
+            margin-top: 0.25rem;
             word-break: break-word;
         }
 
@@ -296,6 +374,44 @@
             color: #718096;
             font-weight: 500;
             white-space: nowrap;
+        }
+
+        .directory-toggle {
+            background: none;
+            border: none;
+            color: #667eea;
+            cursor: pointer;
+            font-size: 0.875rem;
+            font-weight: 500;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            transition: background-color 0.2s ease;
+        }
+
+        .directory-toggle:hover {
+            background: #edf2f7;
+        }
+
+        .directory-children {
+            background: #f8fafc;
+            border-left: 3px solid #667eea;
+            margin-left: 1.5rem;
+            border-radius: 0 8px 8px 0;
+        }
+
+        .directory-children .file-item {
+            padding-left: 2rem;
+            background: transparent;
+        }
+
+        .directory-children .file-item:hover {
+            background: #edf2f7;
+        }
+
+        .directory-icon, .file-icon {
+            font-size: 1rem;
+            width: 16px;
+            text-align: center;
         }
 
         .trackers-section {
@@ -371,7 +487,7 @@
                 padding: 1.5rem;
             }
 
-            .metadata-grid {
+            .metadata-grid, .stats-grid {
                 grid-template-columns: 1fr;
             }
 
@@ -380,7 +496,7 @@
                 align-items: stretch;
             }
 
-            .file-item {
+            .file-item, .directory-item {
                 flex-direction: column;
                 align-items: stretch;
                 gap: 0.5rem;
@@ -388,6 +504,14 @@
 
             .file-size {
                 align-self: flex-end;
+            }
+
+            .directory-children {
+                margin-left: 0.5rem;
+            }
+
+            .directory-children .file-item {
+                padding-left: 1rem;
             }
         }
     </style>
@@ -398,6 +522,21 @@
             <h1>🧲 Magnet Metadata Service</h1>
             <p>Extract detailed metadata from magnet links instantly</p>
         </header>
+
+        <div class="stats-card">
+            <div class="stats-grid">
+                <div class="stat-item">
+                    <div class="stat-value" id="activeTorrents">-</div>
+                    <div class="stat-label">Active Torrents</div>
+                </div>
+                <div class="stat-item">
+                    <div class="status-indicator" id="serviceStatus">
+                        <div class="status-dot"></div>
+                        <span>Service Online</span>
+                    </div>
+                </div>
+            </div>
+        </div>
 
         <div class="main-card">
             <div class="input-section">
@@ -480,6 +619,8 @@
                 this.apiBase = '/api/v1';
                 this.initializeElements();
                 this.bindEvents();
+                this.loadStats();
+                this.startStatsRefresh();
             }
 
             initializeElements() {
@@ -489,6 +630,10 @@
                 this.loading = this.submitBtn.querySelector('.loading');
                 this.errorSection = document.getElementById('errorSection');
                 this.resultsSection = document.getElementById('resultsSection');
+                
+                // Stats elements
+                this.activeTorrents = document.getElementById('activeTorrents');
+                this.serviceStatus = document.getElementById('serviceStatus');
                 
                 // Result elements
                 this.torrentName = document.getElementById('torrentName');
@@ -514,6 +659,29 @@
                     setTimeout(() => this.validateInput(), 100);
                 });
                 this.magnetInput.addEventListener('input', () => this.validateInput());
+            }
+
+            async loadStats() {
+                try {
+                    const response = await fetch(`${this.apiBase}/health`);
+                    const data = await response.json();
+                    
+                    if (response.ok && data.status === 'ok') {
+                        this.activeTorrents.textContent = data.stats.active_torrents.toLocaleString();
+                        this.serviceStatus.style.background = '#48bb78';
+                        this.serviceStatus.querySelector('span').textContent = 'Service Online';
+                    } else {
+                        throw new Error('Service unavailable');
+                    }
+                } catch (error) {
+                    this.activeTorrents.textContent = '?';
+                    this.serviceStatus.style.background = '#f56565';
+                    this.serviceStatus.querySelector('span').textContent = 'Service Offline';
+                }
+            }
+
+            startStatsRefresh() {
+                setInterval(() => this.loadStats(), 30000); // Refresh every 30 seconds
             }
 
             validateInput() {
@@ -588,14 +756,121 @@
                     return;
                 }
 
+                // Group files by directory
+                const fileTree = this.buildFileTree(files);
+                this.renderFileTree(fileTree, this.filesList);
+            }
+
+            buildFileTree(files) {
+                const tree = new Map();
+                
                 files.forEach(file => {
-                    const fileItem = document.createElement('div');
-                    fileItem.className = 'file-item';
-                    fileItem.innerHTML = `
-                        <div class="file-name">${this.escapeHtml(file.path || 'Unknown')}</div>
-                        <div class="file-size">${this.formatBytes(file.size || 0)}</div>
-                    `;
-                    this.filesList.appendChild(fileItem);
+                    const path = file.path || 'Unknown';
+                    const parts = path.split('/').filter(part => part.length > 0);
+                    
+                    if (parts.length === 1) {
+                        // Root level file
+                        tree.set(path, {
+                            type: 'file',
+                            name: parts[0],
+                            size: file.size || 0,
+                            path: path
+                        });
+                    } else {
+                        // File in directory
+                        const dirName = parts[0];
+                        if (!tree.has(dirName)) {
+                            tree.set(dirName, {
+                                type: 'directory',
+                                name: dirName,
+                                children: new Map(),
+                                size: 0
+                            });
+                        }
+                        
+                        const dir = tree.get(dirName);
+                        dir.size += file.size || 0;
+                        
+                        const remainingPath = parts.slice(1).join('/');
+                        dir.children.set(remainingPath, {
+                            type: 'file',
+                            name: parts[parts.length - 1],
+                            size: file.size || 0,
+                            path: path
+                        });
+                    }
+                });
+
+                return tree;
+            }
+
+            renderFileTree(tree, container) {
+                Array.from(tree.entries()).forEach(([key, item]) => {
+                    if (item.type === 'file') {
+                        const fileItem = document.createElement('div');
+                        fileItem.className = 'file-item';
+                        fileItem.innerHTML = `
+                            <div class="file-info">
+                                <div class="file-name">
+                                    <span class="file-icon">📄</span>
+                                    ${this.escapeHtml(item.name)}
+                                </div>
+                            </div>
+                            <div class="file-size">${this.formatBytes(item.size)}</div>
+                        `;
+                        container.appendChild(fileItem);
+                    } else {
+                        const directoryId = `dir-${Math.random().toString(36).substr(2, 9)}`;
+                        const directoryItem = document.createElement('div');
+                        directoryItem.className = 'directory-item';
+                        directoryItem.innerHTML = `
+                            <div class="file-info">
+                                <div class="file-name">
+                                    <span class="directory-icon">📁</span>
+                                    ${this.escapeHtml(item.name)}
+                                </div>
+                                <div class="file-path">${item.children.size} files</div>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 1rem;">
+                                <div class="file-size">${this.formatBytes(item.size)}</div>
+                                <button class="directory-toggle" onclick="this.toggleDirectory('${directoryId}')">
+                                    Show Files
+                                </button>
+                            </div>
+                        `;
+                        
+                        const childrenContainer = document.createElement('div');
+                        childrenContainer.className = 'directory-children';
+                        childrenContainer.id = directoryId;
+                        childrenContainer.style.display = 'none';
+                        
+                        Array.from(item.children.entries()).forEach(([childPath, child]) => {
+                            const childItem = document.createElement('div');
+                            childItem.className = 'file-item';
+                            childItem.innerHTML = `
+                                <div class="file-info">
+                                    <div class="file-name">
+                                        <span class="file-icon">📄</span>
+                                        ${this.escapeHtml(child.name)}
+                                    </div>
+                                    <div class="file-path">${this.escapeHtml(child.path)}</div>
+                                </div>
+                                <div class="file-size">${this.formatBytes(child.size)}</div>
+                            `;
+                            childrenContainer.appendChild(childItem);
+                        });
+                        
+                        container.appendChild(directoryItem);
+                        container.appendChild(childrenContainer);
+                        
+                        // Bind toggle functionality
+                        const toggleBtn = directoryItem.querySelector('.directory-toggle');
+                        toggleBtn.addEventListener('click', () => {
+                            const isVisible = childrenContainer.style.display !== 'none';
+                            childrenContainer.style.display = isVisible ? 'none' : 'block';
+                            toggleBtn.textContent = isVisible ? 'Show Files' : 'Hide Files';
+                        });
+                    }
                 });
             }
 
