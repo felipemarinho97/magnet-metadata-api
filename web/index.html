@@ -42,68 +42,12 @@
             opacity: 0.9;
         }
 
-        .stats-card {
-            background: rgba(255, 255, 255, 0.95);
-            border-radius: 16px;
-            padding: 1.5rem;
-            margin-bottom: 2rem;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
-            backdrop-filter: blur(10px);
-            border: 1px solid rgba(255, 255, 255, 0.2);
-        }
-
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 1rem;
-        }
-
-        .stat-item {
+        .stats-info {
             text-align: center;
-            padding: 1rem;
-            background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
-            border-radius: 12px;
-            border: 1px solid #e2e8f0;
-        }
-
-        .stat-value {
-            font-size: 2rem;
-            font-weight: 700;
-            color: #2d3748;
-            margin-bottom: 0.25rem;
-        }
-
-        .stat-label {
+            margin-bottom: 1rem;
+            color: rgba(255, 255, 255, 0.8);
             font-size: 0.875rem;
-            color: #718096;
-            font-weight: 500;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-        }
-
-        .status-indicator {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.5rem;
-            font-size: 0.875rem;
-            font-weight: 500;
-            padding: 0.25rem 0.75rem;
-            border-radius: 20px;
-            background: #48bb78;
-            color: white;
-        }
-
-        .status-dot {
-            width: 6px;
-            height: 6px;
-            border-radius: 50%;
-            background: currentColor;
-            animation: pulse 2s infinite;
-        }
-
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
+            font-weight: 400;
         }
 
         .main-card {
@@ -523,21 +467,6 @@
             <p>Extract detailed metadata from magnet links instantly</p>
         </header>
 
-        <div class="stats-card">
-            <div class="stats-grid">
-                <div class="stat-item">
-                    <div class="stat-value" id="activeTorrents">-</div>
-                    <div class="stat-label">Active Torrents</div>
-                </div>
-                <div class="stat-item">
-                    <div class="status-indicator" id="serviceStatus">
-                        <div class="status-dot"></div>
-                        <span>Service Online</span>
-                    </div>
-                </div>
-            </div>
-        </div>
-
         <div class="main-card">
             <div class="input-section">
                 <div class="input-group">
@@ -613,6 +542,10 @@
         </div>
     </div>
 
+    <div class="stats-info">
+        <span id="torrentStats">Loading stats...</span>
+    </div>
+
     <script>
         class MagnetMetadataUI {
             constructor() {
@@ -632,8 +565,7 @@
                 this.resultsSection = document.getElementById('resultsSection');
                 
                 // Stats elements
-                this.activeTorrents = document.getElementById('activeTorrents');
-                this.serviceStatus = document.getElementById('serviceStatus');
+                this.torrentStats = document.getElementById('torrentStats');
                 
                 // Result elements
                 this.torrentName = document.getElementById('torrentName');
@@ -667,16 +599,12 @@
                     const data = await response.json();
                     
                     if (response.ok && data.status === 'ok') {
-                        this.activeTorrents.textContent = data.stats.active_torrents.toLocaleString();
-                        this.serviceStatus.style.background = '#48bb78';
-                        this.serviceStatus.querySelector('span').textContent = 'Service Online';
+                        this.torrentStats.textContent = `${data.stats.active_torrents.toLocaleString()} torrents indexed`;
                     } else {
                         throw new Error('Service unavailable');
                     }
                 } catch (error) {
-                    this.activeTorrents.textContent = '?';
-                    this.serviceStatus.style.background = '#f56565';
-                    this.serviceStatus.querySelector('span').textContent = 'Service Offline';
+                    this.torrentStats.textContent = 'Stats unavailable';
                 }
             }
 
