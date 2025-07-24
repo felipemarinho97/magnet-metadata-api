@@ -7,15 +7,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/anacrolix/dht"
+	"github.com/anacrolix/dht/v2"
 	"github.com/anacrolix/torrent"
 	"github.com/anacrolix/torrent/metainfo"
 	"github.com/felipemarinho97/torrent-2-magnet/config"
@@ -67,12 +69,17 @@ func NewTorrentService(config *config.Config) (*TorrentService, error) {
 	clientConfig.DisableUTP = false
 	clientConfig.Seed = config.SeedingEnabled
 	clientConfig.DhtStartingNodes = func(network string) dht.StartingNodesGetter {
-		return func() ([]dht.Node, error) {
-			nodes := make([]dht.Node, len(config.DHTPeers))
+		return func() ([]dht.Addr, error) {
+			nodes := make([]dht.Addr, len(config.DHTPeers))
 			for i, peer := range config.DHTPeers {
-				nodes[i] = dht.Node{
-					Address: peer,
+				port, err := strconv.Atoi(strings.Split(peer, ":")[1])
+				if err != nil {
+					return nil, fmt.Errorf("invalid DHT peer port: %w", err)
 				}
+				nodes[i] = dht.NewAddr(&net.TCPAddr{
+					IP:   net.ParseIP(strings.Split(peer, ":")[0]),
+					Port: port,
+				})
 			}
 			return nodes, nil
 		}
@@ -92,6 +99,24 @@ func NewTorrentService(config *config.Config) (*TorrentService, error) {
 		fmt.Printf("Warning: Failed to count cached files: %v. Using 0 as initial count.", err)
 		fileCount = 0
 	}
+
+	// update fileCount every 10 minutes
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				count, err := util.CountDir(config.CacheDir)
+				if err != nil {
+					log.Printf("Warning: Failed to update cached file count: %v", err)
+				} else {
+					fileCount = count
+					log.Printf("Updated cached file count: %d", fileCount)
+				}
+			}
+		}
+	}()
 
 	service := &TorrentService{
 		config:      config,
@@ -170,7 +195,8 @@ func (ts *TorrentService) parseMagnetURI(magnetURI string) (metainfo.Hash, error
 func (ts *TorrentService) getCachedMetadata(infoHash string) (*model.TorrentMetadata, error) {
 	// Try Redis cache first
 	if ts.redisClient != nil {
-		cached, err := ts.redisClient.Get(ts.ctx, "metadata:"+infoHash).Result()
+		key := strings.ToLower("metadata:" + infoHash)
+		cached, err := ts.redisClient.Get(ts.ctx, key).Result()
 		if err == nil {
 			var metadata model.TorrentMetadata
 			if err := json.Unmarshal([]byte(cached), &metadata); err == nil {
@@ -199,7 +225,8 @@ func (ts *TorrentService) cacheMetadata(metadata *model.TorrentMetadata) error {
 
 	// Cache in Redis with 24h expiration
 	if ts.redisClient != nil {
-		ts.redisClient.Set(ts.ctx, "metadata:"+metadata.InfoHash, data, 24*time.Hour)
+		key := strings.ToLower("metadata:" + metadata.InfoHash)
+		ts.redisClient.Set(ts.ctx, key, data, 24*time.Hour)
 	}
 
 	// Cache on disk
@@ -231,6 +258,12 @@ func (ts *TorrentService) getTorrentMetadata(magnetURI string) (*model.TorrentMe
 
 	infoHashStr := hex.EncodeToString(infoHash[:])
 
+	// Check cache first
+	if cached, err := ts.getCachedMetadata(infoHashStr); cached != nil && err == nil {
+		log.Printf("Cache hit for info hash: %s", infoHashStr)
+		return cached, nil
+	}
+
 	// Get or create a lock for this specific hash
 	hashLock := ts.getOrCreateHashLock(infoHashStr)
 
@@ -243,12 +276,6 @@ func (ts *TorrentService) getTorrentMetadata(magnetURI string) (*model.TorrentMe
 	}()
 
 	log.Printf("Acquired lock for info hash: %s", infoHashStr)
-
-	// Check cache first (even after acquiring lock, in case another request cached it)
-	if cached, err := ts.getCachedMetadata(infoHashStr); cached != nil && err == nil {
-		log.Printf("Cache hit for info hash: %s", infoHashStr)
-		return cached, nil
-	}
 
 	log.Printf("Cache miss, fetching metadata for info hash: %s", infoHashStr)
 
@@ -363,14 +390,49 @@ func (ts *TorrentService) handleGetMetadata(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	metadata, err := ts.getTorrentMetadata(req.MagnetURI)
-	if err != nil {
-		ts.writeError(w, http.StatusInternalServerError, "Failed to get torrent metadata", err.Error())
-		return
+	type result struct {
+		metadata any
+		err      error
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(metadata)
+	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+	defer cancel()
+
+	resultCh := make(chan result, 2)
+
+	go func() {
+		metadata, err := ts.getTorrentMetadata(req.MagnetURI)
+		select {
+		case resultCh <- result{metadata, err}:
+		case <-ctx.Done():
+		}
+	}()
+
+	go func() {
+		metadata, err := ts.getMetadataFromITorrents(req.MagnetURI)
+		select {
+		case resultCh <- result{metadata, err}:
+		case <-ctx.Done():
+		}
+	}()
+
+	var lastErr error
+	for i := 0; i < 2; i++ {
+		select {
+		case res := <-resultCh:
+			if res.err == nil {
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(res.metadata)
+				return
+			}
+			lastErr = res.err
+		case <-ctx.Done():
+			ts.writeError(w, http.StatusGatewayTimeout, "Timeout", "Timeout while retrieving metadata")
+			return
+		}
+	}
+
+	ts.writeError(w, http.StatusInternalServerError, "Failed to get torrent metadata", lastErr.Error())
 }
 
 func (ts *TorrentService) handleDownload(w http.ResponseWriter, r *http.Request) {
