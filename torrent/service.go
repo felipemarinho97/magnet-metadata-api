@@ -12,8 +12,10 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/anacrolix/dht"
 	"github.com/anacrolix/torrent"
 	"github.com/anacrolix/torrent/metainfo"
 	"github.com/felipemarinho97/torrent-2-magnet/config"
@@ -29,6 +31,10 @@ type TorrentService struct {
 	redisClient *redis.Client
 	ctx         context.Context
 	fileCount   int64
+
+	// Lock mechanism for preventing concurrent requests for same hash
+	hashLocks  map[string]*sync.Mutex
+	lockMapMux sync.RWMutex
 }
 
 func NewTorrentService(config *config.Config) (*TorrentService, error) {
@@ -60,6 +66,17 @@ func NewTorrentService(config *config.Config) (*TorrentService, error) {
 	clientConfig.NoDHT = false
 	clientConfig.DisableUTP = false
 	clientConfig.Seed = config.SeedingEnabled
+	clientConfig.DhtStartingNodes = func(network string) dht.StartingNodesGetter {
+		return func() ([]dht.Node, error) {
+			nodes := make([]dht.Node, len(config.DHTPeers))
+			for i, peer := range config.DHTPeers {
+				nodes[i] = dht.Node{
+					Address: peer,
+				}
+			}
+			return nodes, nil
+		}
+	}
 
 	// Additional settings to prevent downloading
 	clientConfig.DisableAggressiveUpload = true
@@ -82,6 +99,8 @@ func NewTorrentService(config *config.Config) (*TorrentService, error) {
 		redisClient: redisClient,
 		ctx:         ctx,
 		fileCount:   fileCount,
+		hashLocks:   make(map[string]*sync.Mutex),
+		lockMapMux:  sync.RWMutex{},
 	}
 
 	return service, nil
@@ -95,6 +114,45 @@ func (ts *TorrentService) Close() error {
 		return ts.redisClient.Close()
 	}
 	return nil
+}
+
+// getOrCreateHashLock returns a lock for the given hash, creating one if it doesn't exist
+func (ts *TorrentService) getOrCreateHashLock(infoHash string) *sync.Mutex {
+	ts.lockMapMux.RLock()
+	if lock, exists := ts.hashLocks[infoHash]; exists {
+		ts.lockMapMux.RUnlock()
+		return lock
+	}
+	ts.lockMapMux.RUnlock()
+
+	// Need to create a new lock
+	ts.lockMapMux.Lock()
+	defer ts.lockMapMux.Unlock()
+
+	// Double-check in case another goroutine created it while we were waiting
+	if lock, exists := ts.hashLocks[infoHash]; exists {
+		return lock
+	}
+
+	// Create new lock
+	lock := &sync.Mutex{}
+	ts.hashLocks[infoHash] = lock
+	return lock
+}
+
+// cleanupHashLock removes the lock for a hash if it's no longer needed
+func (ts *TorrentService) cleanupHashLock(infoHash string) {
+	ts.lockMapMux.Lock()
+	defer ts.lockMapMux.Unlock()
+
+	// Only delete if no one is waiting on it
+	if lock, exists := ts.hashLocks[infoHash]; exists {
+		// Try to acquire the lock immediately to see if anyone is waiting
+		if lock.TryLock() {
+			delete(ts.hashLocks, infoHash)
+			lock.Unlock()
+		}
+	}
 }
 
 func (ts *TorrentService) parseMagnetURI(magnetURI string) (metainfo.Hash, error) {
@@ -173,7 +231,20 @@ func (ts *TorrentService) getTorrentMetadata(magnetURI string) (*model.TorrentMe
 
 	infoHashStr := hex.EncodeToString(infoHash[:])
 
-	// Check cache first
+	// Get or create a lock for this specific hash
+	hashLock := ts.getOrCreateHashLock(infoHashStr)
+
+	// Acquire the lock for this hash
+	hashLock.Lock()
+	defer func() {
+		hashLock.Unlock()
+		// Clean up the lock if possible (non-blocking)
+		go ts.cleanupHashLock(infoHashStr)
+	}()
+
+	log.Printf("Acquired lock for info hash: %s", infoHashStr)
+
+	// Check cache first (even after acquiring lock, in case another request cached it)
 	if cached, err := ts.getCachedMetadata(infoHashStr); cached != nil && err == nil {
 		log.Printf("Cache hit for info hash: %s", infoHashStr)
 		return cached, nil
@@ -181,22 +252,43 @@ func (ts *TorrentService) getTorrentMetadata(magnetURI string) (*model.TorrentMe
 
 	log.Printf("Cache miss, fetching metadata for info hash: %s", infoHashStr)
 
+	// Check if torrent is already added to client
+	existingTorrent, exists := ts.client.Torrent(infoHash)
+	if exists && existingTorrent.Info() != nil {
+		log.Printf("Torrent already exists in client with info: %s", infoHashStr)
+		return ts.extractMetadataFromTorrent(existingTorrent, infoHashStr)
+	}
+
 	// Add torrent to client
 	t, err := ts.client.AddMagnet(magnetURI)
 	if err != nil {
 		return nil, fmt.Errorf("failed to add magnet: %w", err)
 	}
 
+	// Ensure we clean up the torrent when done
+	defer func() {
+		// Only drop if we added it and it's not needed anymore
+		if t != nil {
+			log.Printf("Dropping torrent from client: %s", infoHashStr)
+			t.Drop()
+		}
+	}()
+
 	t.DisallowDataDownload()
+
 	// Wait for info with timeout
 	select {
 	case <-t.GotInfo():
 		log.Printf("Got info for torrent: %s", t.Name())
 	case <-time.After(30 * time.Second):
-		t.Drop()
 		return nil, fmt.Errorf("timeout waiting for torrent info")
 	}
 
+	return ts.extractMetadataFromTorrent(t, infoHashStr)
+}
+
+// extractMetadataFromTorrent extracts metadata from a torrent object
+func (ts *TorrentService) extractMetadataFromTorrent(t *torrent.Torrent, infoHashStr string) (*model.TorrentMetadata, error) {
 	// Extract metadata
 	info := t.Info()
 	if info == nil {
@@ -246,7 +338,7 @@ func (ts *TorrentService) getTorrentMetadata(magnetURI string) (*model.TorrentMe
 		metadata.DownloadURL = nil
 	}
 
-	// Save the .torrent file before dropping
+	// Save the .torrent file before returning
 	if err := ts.saveTorrentFile(t, infoHashStr); err != nil {
 		log.Printf("Failed to save torrent file: %v", err)
 	}
@@ -310,10 +402,15 @@ func (ts *TorrentService) handleDownload(w http.ResponseWriter, r *http.Request)
 }
 
 func (ts *TorrentService) handleHealth(w http.ResponseWriter, r *http.Request) {
+	ts.lockMapMux.RLock()
+	activeLocks := len(ts.hashLocks)
+	ts.lockMapMux.RUnlock()
+
 	health := map[string]interface{}{
 		"status": "ok",
 		"stats": map[string]interface{}{
 			"active_torrents": len(ts.client.Torrents()) + int(ts.fileCount),
+			"active_locks":    activeLocks,
 		},
 	}
 
