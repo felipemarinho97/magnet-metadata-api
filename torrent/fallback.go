@@ -1,6 +1,7 @@
 package torrent
 
 import (
+	"bytes"
 	"compress/gzip"
 	"crypto/sha1"
 	"fmt"
@@ -39,12 +40,41 @@ type TorrentFileInfo struct {
 	Path   []string `bencode:"path"`
 }
 
+// Custom decoder that stops when it encounters the pieces field
+type PartialTorrentInfo struct {
+	Name        string            `bencode:"name"`
+	Length      int64             `bencode:"length"`
+	Files       []TorrentFileInfo `bencode:"files"`
+	PieceLength int64             `bencode:"piece length"`
+	// We'll skip the pieces field to avoid downloading large data
+}
+
+type PartialTorrentFile struct {
+	Announce     string             `bencode:"announce"`
+	AnnounceList [][]string         `bencode:"announce-list"`
+	Comment      string             `bencode:"comment"`
+	CreatedBy    string             `bencode:"created by"`
+	CreationDate int64              `bencode:"creation date"`
+	Info         PartialTorrentInfo `bencode:"info"`
+}
+
+const (
+	// Initial chunk size - should be enough for most torrent headers
+	initialChunkSize = 12 * 1024 // 12KB
+	// Maximum total size we're willing to download
+	maxHeaderSize = 512 * 1024 // 512KB
+	// Chunk increment size
+	chunkIncrement = 16 * 1024 // 16KB
+)
+
 func (ts *TorrentService) getMetadataFromITorrents(magnetURI string) (*model.TorrentMetadata, error) {
-	// Extract info hash from magnet URI
-	infoHash, err := extractInfoHashFromMagnet(magnetURI)
+	hash, err := ts.parseMagnetURI(magnetURI)
 	if err != nil {
-		return nil, fmt.Errorf("[fallback] failed to extract info hash from magnet URI: %w", err)
+		fmt.Printf("[fallback] Failed to parse magnet URI: %v\n", err)
+		return nil, fmt.Errorf("[fallback] failed to parse magnet URI: %w", err)
 	}
+	// Extract info hash from magnet URI
+	infoHash := hash.String()
 
 	// Convert info hash to uppercase hex format
 	infoHashHex := strings.ToUpper(infoHash)
@@ -52,14 +82,14 @@ func (ts *TorrentService) getMetadataFromITorrents(magnetURI string) (*model.Tor
 	// Construct iTorrents URL
 	torrentURL := fmt.Sprintf("http://itorrents.org/torrent/%s.torrent", infoHashHex)
 
-	// Fetch torrent file
-	torrentData, err := fetchTorrentFile(torrentURL)
+	// Fetch torrent file header
+	torrentData, err := fetchTorrentHeader(torrentURL)
 	if err != nil {
 		return nil, fmt.Errorf("[fallback] failed to fetch torrent file: %w", err)
 	}
 
 	// Parse torrent file
-	metadata, err := parseTorrentFile(torrentData, infoHashHex)
+	metadata, err := parsePartialTorrentFile(torrentData, infoHashHex)
 	if err != nil {
 		return nil, fmt.Errorf("[fallback] failed to parse torrent file: %w", err)
 	}
@@ -76,48 +106,53 @@ func (ts *TorrentService) getMetadataFromITorrents(magnetURI string) (*model.Tor
 	return metadata, nil
 }
 
-// extractInfoHashFromMagnet extracts the info hash from a magnet URI
-func extractInfoHashFromMagnet(magnetURI string) (string, error) {
-	// Parse the magnet URI
-	u, err := url.Parse(magnetURI)
-	if err != nil {
-		return "", fmt.Errorf("invalid magnet URI: %w", err)
-	}
-
-	if u.Scheme != "magnet" {
-		return "", fmt.Errorf("not a magnet URI")
-	}
-
-	// Extract xt parameter (exact topic)
-	query := u.Query()
-	xt := query.Get("xt")
-	if xt == "" {
-		return "", fmt.Errorf("no xt parameter found in magnet URI")
-	}
-
-	// Extract info hash from xt parameter
-	// Format is usually "urn:btih:INFO_HASH"
-	re := regexp.MustCompile(`urn:btih:([a-fA-F0-9]{40})`)
-	matches := re.FindStringSubmatch(xt)
-	if len(matches) < 2 {
-		return "", fmt.Errorf("invalid xt parameter format")
-	}
-
-	return matches[1], nil
-}
-
-// fetchTorrentFile fetches the torrent file from iTorrents with gzip support
-func fetchTorrentFile(url string) ([]byte, error) {
+// fetchTorrentHeader fetches only the header portion of the torrent file
+func fetchTorrentHeader(url string) ([]byte, error) {
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 	}
 
+	var allData bytes.Buffer
+	currentSize := initialChunkSize
+	start := 0
+
+	for currentSize <= maxHeaderSize {
+		// Try to fetch current chunk size
+		chunk, err := fetchChunk(client, url, start, currentSize-1)
+		if err != nil {
+			return nil, err
+		}
+
+		allData.Write(chunk)
+
+		// Try to parse what we have so far
+		if complete, safeData := getCompleteHeader(allData.Bytes()); complete {
+			return safeData, nil
+		}
+
+		// If we got less data than requested, we've reached the end of file
+		if len(chunk) < currentSize {
+			fmt.Printf("[fallback] Reached end of file at %d bytes\n", start+len(chunk))
+			return allData.Bytes(), nil
+		}
+
+		// Increase chunk size and try again
+		currentSize += chunkIncrement
+		start += len(chunk)
+	}
+
+	return nil, fmt.Errorf("torrent header too large (exceeded %d bytes)", maxHeaderSize)
+}
+
+// fetchChunk fetches a specific byte range from the URL
+func fetchChunk(client *http.Client, url string, start, end int) ([]byte, error) {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	// Set headers to accept gzip encoding
+	// Set range header to fetch only specific bytes
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
 	req.Header.Set("Accept-Encoding", "gzip")
 	req.Header.Set("User-Agent", "TorrentMetadataService/1.0")
 
@@ -127,7 +162,8 @@ func fetchTorrentFile(url string) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	// Accept both 200 (full content) and 206 (partial content)
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
 		return nil, fmt.Errorf("HTTP error: %d %s", resp.StatusCode, resp.Status)
 	}
 
@@ -151,13 +187,35 @@ func fetchTorrentFile(url string) ([]byte, error) {
 	return data, nil
 }
 
-// parseTorrentFile parses the torrent file data and extracts metadata
-func parseTorrentFile(data []byte, infoHash string) (*model.TorrentMetadata, error) {
-	var torrent TorrentFile
+// getCompleteHeader checks if we have enough data to parse the torrent metadata
+// This is a heuristic - we look for the pieces field which comes after all metadata
+func getCompleteHeader(data []byte) (bool, []byte) {
+	piecesMarker := []byte("pieces")
+	piecesIndex := bytes.Index(data, piecesMarker)
+
+	if piecesIndex == -1 {
+		return false, nil // Haven't reached "pieces" field yet
+	}
+
+	// Truncate to avoid decoding garbage past this point
+	safeData := data[:piecesIndex+len(piecesMarker)]
+
+	// append bencode endings
+	safeData = append(safeData, []byte("1ee")...) // bencode end marker
+
+	var partial PartialTorrentFile
+	_ = bencode.DecodeBytes(safeData, &partial)
+	return len(partial.Info.Files) > 0 || partial.Info.Length > 0, safeData
+}
+
+// parsePartialTorrentFile parses the torrent file data and extracts metadata (without pieces)
+func parsePartialTorrentFile(data []byte, infoHash string) (*model.TorrentMetadata, error) {
+	var torrent PartialTorrentFile
 
 	err := bencode.DecodeBytes(data, &torrent)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode torrent file: %w", err)
+	if err != nil && torrent.Info.Name == "" {
+		// If partial parsing fails, try to extract what we can manually
+		return parseManuallyFromBytes(data, infoHash)
 	}
 
 	metadata := &model.TorrentMetadata{
@@ -221,6 +279,139 @@ func parseTorrentFile(data []byte, infoHash string) (*model.TorrentMetadata, err
 	metadata.Files = files
 
 	return metadata, nil
+}
+
+// parseManuallyFromBytes attempts to extract metadata when bencode parsing fails
+func parseManuallyFromBytes(data []byte, infoHash string) (*model.TorrentMetadata, error) {
+	// This is a fallback - try to decode as a regular torrent file
+	// but ignore errors related to incomplete pieces data
+	var torrent map[string]interface{}
+	err := bencode.DecodeBytes(data, &torrent)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode torrent data: %w", err)
+	}
+
+	metadata := &model.TorrentMetadata{
+		InfoHash: infoHash,
+	}
+
+	// Extract announce
+	if announce, ok := torrent["announce"].(string); ok {
+		metadata.Trackers = append(metadata.Trackers, announce)
+	}
+
+	// Extract announce-list
+	if announceList, ok := torrent["announce-list"].([]interface{}); ok {
+		for _, tier := range announceList {
+			if tierList, ok := tier.([]interface{}); ok {
+				for _, tracker := range tierList {
+					if trackerStr, ok := tracker.(string); ok && !contains(metadata.Trackers, trackerStr) {
+						metadata.Trackers = append(metadata.Trackers, trackerStr)
+					}
+				}
+			}
+		}
+	}
+
+	// Extract comment
+	if comment, ok := torrent["comment"].(string); ok {
+		metadata.Comment = comment
+	}
+
+	// Extract creation date
+	if creationDate, ok := torrent["creation date"].(int64); ok {
+		createdAt := time.Unix(creationDate, 0)
+		metadata.CreatedAt = &createdAt
+	}
+
+	// Extract info section
+	if info, ok := torrent["info"].(map[string]interface{}); ok {
+		if name, ok := info["name"].(string); ok {
+			metadata.Name = name
+		}
+
+		// Handle single file vs multi-file
+		if length, ok := info["length"].(int64); ok {
+			// Single file torrent
+			metadata.Size = length
+			metadata.Files = []model.FileInfo{
+				{
+					Path:   metadata.Name,
+					Size:   length,
+					Offset: 0,
+				},
+			}
+		} else if files, ok := info["files"].([]interface{}); ok {
+			// Multi-file torrent
+			var totalSize int64
+			var fileInfos []model.FileInfo
+			var offset int64
+
+			for _, file := range files {
+				if fileMap, ok := file.(map[string]interface{}); ok {
+					var fileLength int64
+					var filePath []string
+
+					if length, ok := fileMap["length"].(int64); ok {
+						fileLength = length
+					}
+
+					if pathList, ok := fileMap["path"].([]interface{}); ok {
+						for _, pathPart := range pathList {
+							if pathStr, ok := pathPart.(string); ok {
+								filePath = append(filePath, pathStr)
+							}
+						}
+					}
+
+					if len(filePath) > 0 {
+						fileInfos = append(fileInfos, model.FileInfo{
+							Path:   filepath.Join(filePath...),
+							Size:   fileLength,
+							Offset: offset,
+						})
+						totalSize += fileLength
+						offset += fileLength
+					}
+				}
+			}
+
+			metadata.Size = totalSize
+			metadata.Files = fileInfos
+		}
+	}
+
+	return metadata, nil
+}
+
+// extractInfoHashFromMagnet extracts the info hash from a magnet URI
+func extractInfoHashFromMagnet(magnetURI string) (string, error) {
+	// Parse the magnet URI
+	u, err := url.Parse(magnetURI)
+	if err != nil {
+		return "", fmt.Errorf("invalid magnet URI: %w", err)
+	}
+
+	if u.Scheme != "magnet" {
+		return "", fmt.Errorf("not a magnet URI")
+	}
+
+	// Extract xt parameter (exact topic)
+	query := u.Query()
+	xt := query.Get("xt")
+	if xt == "" {
+		return "", fmt.Errorf("no xt parameter found in magnet URI")
+	}
+
+	// Extract info hash from xt parameter
+	// Format is usually "urn:btih:INFO_HASH"
+	re := regexp.MustCompile(`urn:btih:([a-fA-F0-9]{40})`)
+	matches := re.FindStringSubmatch(xt)
+	if len(matches) < 2 {
+		return "", fmt.Errorf("invalid xt parameter format")
+	}
+
+	return matches[1], nil
 }
 
 // contains checks if a string slice contains a specific string

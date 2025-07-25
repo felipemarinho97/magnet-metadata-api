@@ -425,6 +425,7 @@ func (ts *TorrentService) handleGetMetadata(w http.ResponseWriter, r *http.Reque
 				json.NewEncoder(w).Encode(res.metadata)
 				return
 			}
+			log.Printf("Error retrieving metadata: %v", res.err)
 			lastErr = res.err
 		case <-ctx.Done():
 			ts.writeError(w, http.StatusGatewayTimeout, "Timeout", "Timeout while retrieving metadata")
