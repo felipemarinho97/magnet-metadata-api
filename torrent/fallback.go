@@ -6,6 +6,9 @@ import (
 	"crypto/sha1"
 	"fmt"
 	"io"
+	"log"
+	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -60,12 +63,26 @@ type PartialTorrentFile struct {
 
 const (
 	// Initial chunk size - should be enough for most torrent headers
-	initialChunkSize = 12 * 1024 // 12KB
+	initialChunkSize = 6 * 1024 // 6KB
 	// Maximum total size we're willing to download
 	maxHeaderSize = 512 * 1024 // 512KB
 	// Chunk increment size
-	chunkIncrement = 16 * 1024 // 16KB
+	chunkIncrement = 6 * 1024 // 6KB
 )
+
+var iTorrentsClient = &http.Client{
+	Timeout: 15 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 100,
+		IdleConnTimeout:     90 * time.Second,
+		DialContext: (&net.Dialer{
+			Timeout:   5 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2: true,
+	},
+}
 
 func (ts *TorrentService) getMetadataFromITorrents(magnetURI string) (*model.TorrentMetadata, error) {
 	hash, err := ts.parseMagnetURI(magnetURI)
@@ -80,12 +97,12 @@ func (ts *TorrentService) getMetadataFromITorrents(magnetURI string) (*model.Tor
 	infoHashHex := strings.ToUpper(infoHash)
 
 	// Construct iTorrents URL
-	torrentURL := fmt.Sprintf("http://itorrents.org/torrent/%s.torrent", infoHashHex)
+	torrentURL := fmt.Sprintf("https://itorrents.org/torrent/%s.torrent", infoHashHex)
 
 	// Fetch torrent file header
 	torrentData, err := fetchTorrentHeader(torrentURL)
 	if err != nil {
-		return nil, fmt.Errorf("[fallback] failed to fetch torrent file: %w", err)
+		return nil, fmt.Errorf("[fallback] failed to fetch torrent file %s: %w", hash, err)
 	}
 
 	// Parse torrent file
@@ -103,14 +120,13 @@ func (ts *TorrentService) getMetadataFromITorrents(magnetURI string) (*model.Tor
 		return nil, fmt.Errorf("[fallback] failed to cache metadata: %w", err)
 	}
 
+	log.Printf("[fallback] Got info for torrent hash: %s", infoHashHex)
+
 	return metadata, nil
 }
 
 // fetchTorrentHeader fetches only the header portion of the torrent file
 func fetchTorrentHeader(url string) ([]byte, error) {
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-	}
 
 	var allData bytes.Buffer
 	currentSize := initialChunkSize
@@ -118,7 +134,7 @@ func fetchTorrentHeader(url string) ([]byte, error) {
 
 	for currentSize <= maxHeaderSize {
 		// Try to fetch current chunk size
-		chunk, err := fetchChunk(client, url, start, currentSize-1)
+		chunk, err := fetchChunk(iTorrentsClient, url, start, currentSize-1)
 		if err != nil {
 			return nil, err
 		}
@@ -156,7 +172,7 @@ func fetchChunk(client *http.Client, url string, start, end int) ([]byte, error)
 	req.Header.Set("Accept-Encoding", "gzip")
 	req.Header.Set("User-Agent", "TorrentMetadataService/1.0")
 
-	resp, err := client.Do(req)
+	resp, err := doWithBackoff(client, req, 3, 500*time.Millisecond)
 	if err != nil {
 		return nil, err
 	}
@@ -452,4 +468,37 @@ func verifyInfoHash(data []byte, expectedHash string) error {
 	}
 
 	return nil
+}
+
+func doWithBackoff(client *http.Client, req *http.Request, maxRetries int, baseDelay time.Duration) (*http.Response, error) {
+	var resp *http.Response
+	var err error
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		resp, err = client.Do(req)
+		if err == nil && resp.StatusCode < 500 {
+			return resp, nil // Success or client error (e.g. 404), don't retry
+		}
+
+		if resp != nil {
+			resp.Body.Close()
+		}
+
+		// Exponential backoff with jitter
+		backoff := baseDelay * time.Duration(math.Pow(2, float64(attempt)))
+		jitter := time.Duration(float64(backoff) * (0.5 + 0.5*randFloat64()))
+		time.Sleep(jitter)
+	}
+	var errorMessage string
+	if err != nil {
+		errorMessage = err.Error()
+	} else {
+		errorMessage = fmt.Sprintf("HTTP error: %d %s", resp.StatusCode, resp.Status)
+	}
+
+	return nil, fmt.Errorf("failed after %d retries: %w", maxRetries, errorMessage)
+}
+
+func randFloat64() float64 {
+	return float64(time.Now().UnixNano()%1000) / 1000.0
 }

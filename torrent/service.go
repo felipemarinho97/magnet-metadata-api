@@ -250,7 +250,7 @@ func (ts *TorrentService) saveTorrentFile(t *torrent.Torrent, infoHashStr string
 	return os.WriteFile(torrentPath, torrentData, 0644)
 }
 
-func (ts *TorrentService) getTorrentMetadata(magnetURI string) (*model.TorrentMetadata, error) {
+func (ts *TorrentService) getTorrentMetadata(ctx context.Context, magnetURI string) (*model.TorrentMetadata, error) {
 	infoHash, err := ts.parseMagnetURI(magnetURI)
 	if err != nil {
 		return nil, err
@@ -309,6 +309,8 @@ func (ts *TorrentService) getTorrentMetadata(magnetURI string) (*model.TorrentMe
 		log.Printf("Got info for torrent: %s", t.Name())
 	case <-time.After(30 * time.Second):
 		return nil, fmt.Errorf("timeout waiting for torrent info")
+	case <-ctx.Done():
+		return nil, fmt.Errorf("context cancelled while waiting for torrent info")
 	}
 
 	return ts.extractMetadataFromTorrent(t, infoHashStr)
@@ -395,13 +397,13 @@ func (ts *TorrentService) handleGetMetadata(w http.ResponseWriter, r *http.Reque
 		err      error
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
 	resultCh := make(chan result, 2)
 
 	go func() {
-		metadata, err := ts.getTorrentMetadata(req.MagnetURI)
+		metadata, err := ts.getTorrentMetadata(ctx, req.MagnetURI)
 		select {
 		case resultCh <- result{metadata, err}:
 		case <-ctx.Done():
