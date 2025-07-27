@@ -11,6 +11,7 @@ RUN if [ "$TARGETPLATFORM" = "linux/386" ];  then cp magnetmetadataapi_linux_386
 RUN if [ "$TARGETPLATFORM" = "linux/arm64" ];  then cp magnetmetadataapi_linux_arm64_linux_arm64_v8.0/magnet-metadata-api /magnet-metadata-api; fi
 RUN if [ "$TARGETPLATFORM" = "linux/arm/v6" ]; then cp magnetmetadataapi_linux_arm_linux_arm_6/magnet-metadata-api /magnet-metadata-api; fi
 RUN if [ "$TARGETPLATFORM" = "linux/arm/v7" ]; then cp magnetmetadataapi_linux_arm_linux_arm_7/magnet-metadata-api /magnet-metadata-api; fi
+RUN if [ "$TARGETPLATFORM" = "linux/riscv64" ]; then cp magnetmetadataapi_linux_riscv64_linux_riscv64_rva20u64/magnet-metadata-api /magnet-metadata-api; fi
 RUN chmod +x /magnet-metadata-api
 
 
