@@ -3,16 +3,13 @@ package torrent
 import (
 	"bytes"
 	"compress/gzip"
-	"crypto/sha1"
 	"fmt"
 	"io"
 	"log"
 	"math"
 	"net"
 	"net/http"
-	"net/url"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -392,36 +389,6 @@ func parseManuallyFromBytes(data []byte, infoHash string) (*model.TorrentMetadat
 	return metadata, nil
 }
 
-// extractInfoHashFromMagnet extracts the info hash from a magnet URI
-func extractInfoHashFromMagnet(magnetURI string) (string, error) {
-	// Parse the magnet URI
-	u, err := url.Parse(magnetURI)
-	if err != nil {
-		return "", fmt.Errorf("invalid magnet URI: %w", err)
-	}
-
-	if u.Scheme != "magnet" {
-		return "", fmt.Errorf("not a magnet URI")
-	}
-
-	// Extract xt parameter (exact topic)
-	query := u.Query()
-	xt := query.Get("xt")
-	if xt == "" {
-		return "", fmt.Errorf("no xt parameter found in magnet URI")
-	}
-
-	// Extract info hash from xt parameter
-	// Format is usually "urn:btih:INFO_HASH"
-	re := regexp.MustCompile(`urn:btih:([a-fA-F0-9]{40})`)
-	matches := re.FindStringSubmatch(xt)
-	if len(matches) < 2 {
-		return "", fmt.Errorf("invalid xt parameter format")
-	}
-
-	return matches[1], nil
-}
-
 // contains checks if a string slice contains a specific string
 func contains(slice []string, item string) bool {
 	for _, s := range slice {
@@ -430,36 +397,6 @@ func contains(slice []string, item string) bool {
 		}
 	}
 	return false
-}
-
-// Verify info hash by recalculating it from the info section
-func verifyInfoHash(data []byte, expectedHash string) error {
-	var torrent map[string]interface{}
-	err := bencode.DecodeBytes(data, &torrent)
-	if err != nil {
-		return err
-	}
-
-	infoSection, ok := torrent["info"]
-	if !ok {
-		return fmt.Errorf("no info section found in torrent")
-	}
-
-	// Re-encode the info section
-	infoBytes, err := bencode.EncodeBytes(infoSection)
-	if err != nil {
-		return err
-	}
-
-	// Calculate SHA1 hash
-	hash := sha1.Sum(infoBytes)
-	calculatedHash := fmt.Sprintf("%X", hash)
-
-	if calculatedHash != strings.ToUpper(expectedHash) {
-		return fmt.Errorf("info hash mismatch: expected %s, got %s", expectedHash, calculatedHash)
-	}
-
-	return nil
 }
 
 func doWithBackoff(client *http.Client, req *http.Request, maxRetries int, baseDelay time.Duration) (*http.Response, error) {
@@ -488,7 +425,7 @@ func doWithBackoff(client *http.Client, req *http.Request, maxRetries int, baseD
 		errorMessage = fmt.Sprintf("HTTP error: %d %s", resp.StatusCode, resp.Status)
 	}
 
-	return nil, fmt.Errorf("failed after %d retries: %w", maxRetries, errorMessage)
+	return nil, fmt.Errorf("failed after %d retries: %s", maxRetries, errorMessage)
 }
 
 func randFloat64() float64 {

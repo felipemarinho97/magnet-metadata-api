@@ -103,16 +103,13 @@ func NewTorrentService(config *config.Config) (*TorrentService, error) {
 	go func() {
 		ticker := time.NewTicker(10 * time.Minute)
 		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				count, err := util.CountDir(config.CacheDir)
-				if err != nil {
-					log.Printf("Warning: Failed to update cached file count: %v", err)
-				} else {
-					fileCount = count
-					log.Printf("Updated cached file count: %d", fileCount)
-				}
+		for range ticker.C {
+			count, err := util.CountDir(config.CacheDir)
+			if err != nil {
+				log.Printf("Warning: Failed to update cached file count: %v", err)
+			} else {
+				fileCount = count
+				log.Printf("Updated cached file count: %d", fileCount)
 			}
 		}
 	}()
@@ -185,8 +182,7 @@ func (ts *TorrentService) parseMagnetURI(magnetURI string) (metainfo.Hash, error
 		return metainfo.Hash{}, fmt.Errorf("failed to parse magnet URI: %w", err)
 	}
 
-	var infoHash metainfo.Hash
-	infoHash = magnet.InfoHash
+	infoHash := magnet.InfoHash
 
 	return infoHash, nil
 }
@@ -334,9 +330,7 @@ func (ts *TorrentService) extractMetadataFromTorrent(t *torrent.Torrent, infoHas
 
 	// Extract trackers
 	for _, tier := range t.Metainfo().AnnounceList {
-		for _, tracker := range tier {
-			metadata.Trackers = append(metadata.Trackers, tracker)
-		}
+		metadata.Trackers = append(metadata.Trackers, tier...)
 	}
 
 	// Add download URL if enabled
@@ -398,7 +392,11 @@ func (ts *TorrentService) handleGetMetadata(w http.ResponseWriter, r *http.Reque
 	if cached, err := ts.getCachedMetadata(infoHashStr); cached != nil && err == nil {
 		log.Printf("Cache hit after lock acquisition for info hash: %s", infoHashStr)
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(cached)
+		err = json.NewEncoder(w).Encode(cached)
+		if err != nil {
+			log.Printf("Error encoding cached metadata: %v", err)
+			ts.writeError(w, http.StatusInternalServerError, "Encoding error", "Failed to encode cached metadata")
+		}
 		return
 	}
 
@@ -436,7 +434,11 @@ func (ts *TorrentService) handleGetMetadata(w http.ResponseWriter, r *http.Reque
 		case res := <-resultCh:
 			if res.err == nil {
 				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(res.metadata)
+				err = json.NewEncoder(w).Encode(res.metadata)
+				if err != nil {
+					log.Printf("Error encoding metadata: %v", err)
+					ts.writeError(w, http.StatusInternalServerError, "Encoding error", "Failed to encode metadata")
+				}
 				return
 			}
 			log.Printf("Error retrieving metadata: %v", res.err)
@@ -471,7 +473,11 @@ func (ts *TorrentService) handleDownload(w http.ResponseWriter, r *http.Request)
 	if data, err := os.ReadFile(torrentPath); err == nil {
 		w.Header().Set("Content-Type", "application/x-bittorrent")
 		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s.torrent\"", infoHash))
-		w.Write(data)
+		_, err := w.Write(data)
+		if err != nil {
+			log.Printf("Error writing torrent file: %v", err)
+			ts.writeError(w, http.StatusInternalServerError, "Write error", "Failed to write torrent file")
+		}
 		return
 	}
 
@@ -492,16 +498,26 @@ func (ts *TorrentService) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(health)
+	err := json.NewEncoder(w).Encode(health)
+	if err != nil {
+		log.Printf("Error encoding health response: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
 }
 
 func (ts *TorrentService) writeError(w http.ResponseWriter, status int, error, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(model.ErrorResponse{
+	err := json.NewEncoder(w).Encode(model.ErrorResponse{
 		Error:   error,
 		Message: message,
 	})
+	if err != nil {
+		log.Printf("Error encoding error response: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
 }
 
 func (ts *TorrentService) SetupRoutes() *mux.Router {
