@@ -4,8 +4,8 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/felipemarinho97/torrent-2-magnet/config"
-	"github.com/felipemarinho97/torrent-2-magnet/torrent"
+	"github.com/felipemarinho97/magnet-metadata-api/config"
+	"github.com/felipemarinho97/magnet-metadata-api/torrent"
 )
 
 func main() {

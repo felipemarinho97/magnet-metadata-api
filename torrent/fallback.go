@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/felipemarinho97/torrent-2-magnet/model"
+	"github.com/felipemarinho97/magnet-metadata-api/model"
 	"github.com/zeebo/bencode"
 )
 
@@ -84,15 +84,7 @@ var iTorrentsClient = &http.Client{
 	},
 }
 
-func (ts *TorrentService) getMetadataFromITorrents(magnetURI string) (*model.TorrentMetadata, error) {
-	hash, err := ts.parseMagnetURI(magnetURI)
-	if err != nil {
-		fmt.Printf("[fallback] Failed to parse magnet URI: %v\n", err)
-		return nil, fmt.Errorf("[fallback] failed to parse magnet URI: %w", err)
-	}
-	// Extract info hash from magnet URI
-	infoHash := hash.String()
-
+func (ts *TorrentService) getMetadataFromITorrents(infoHash string) (*model.TorrentMetadata, error) {
 	// Convert info hash to uppercase hex format
 	infoHashHex := strings.ToUpper(infoHash)
 
@@ -102,7 +94,7 @@ func (ts *TorrentService) getMetadataFromITorrents(magnetURI string) (*model.Tor
 	// Fetch torrent file header
 	torrentData, err := fetchTorrentHeader(torrentURL)
 	if err != nil {
-		return nil, fmt.Errorf("[fallback] failed to fetch torrent file %s: %w", hash, err)
+		return nil, fmt.Errorf("[fallback] failed to fetch torrent file %s: %w", infoHash, err)
 	}
 
 	// Parse torrent file

@@ -3,7 +3,6 @@ package torrent
 import (
 	"bytes"
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -20,9 +19,9 @@ import (
 	"github.com/anacrolix/dht/v2"
 	"github.com/anacrolix/torrent"
 	"github.com/anacrolix/torrent/metainfo"
-	"github.com/felipemarinho97/torrent-2-magnet/config"
-	"github.com/felipemarinho97/torrent-2-magnet/model"
-	"github.com/felipemarinho97/torrent-2-magnet/util"
+	"github.com/felipemarinho97/magnet-metadata-api/config"
+	"github.com/felipemarinho97/magnet-metadata-api/model"
+	"github.com/felipemarinho97/magnet-metadata-api/util"
 	"github.com/go-redis/redis/v8"
 	"github.com/gorilla/mux"
 )
@@ -256,28 +255,9 @@ func (ts *TorrentService) getTorrentMetadata(ctx context.Context, magnetURI stri
 		return nil, err
 	}
 
-	infoHashStr := hex.EncodeToString(infoHash[:])
+	infoHashStr := infoHash.String()
 
-	// Check cache first
-	if cached, err := ts.getCachedMetadata(infoHashStr); cached != nil && err == nil {
-		log.Printf("Cache hit for info hash: %s", infoHashStr)
-		return cached, nil
-	}
-
-	// Get or create a lock for this specific hash
-	hashLock := ts.getOrCreateHashLock(infoHashStr)
-
-	// Acquire the lock for this hash
-	hashLock.Lock()
-	defer func() {
-		hashLock.Unlock()
-		// Clean up the lock if possible (non-blocking)
-		go ts.cleanupHashLock(infoHashStr)
-	}()
-
-	log.Printf("Acquired lock for info hash: %s", infoHashStr)
-
-	log.Printf("Cache miss, fetching metadata for info hash: %s", infoHashStr)
+	log.Printf("Fetching metadata for info hash: %s", infoHashStr)
 
 	// Check if torrent is already added to client
 	existingTorrent, exists := ts.client.Torrent(infoHash)
@@ -392,6 +372,38 @@ func (ts *TorrentService) handleGetMetadata(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Parse magnet URI to get info hash early
+	infoHash, err := ts.parseMagnetURI(req.MagnetURI)
+	if err != nil {
+		ts.writeError(w, http.StatusBadRequest, "Invalid magnet URI", err.Error())
+		return
+	}
+
+	infoHashStr := infoHash.String()
+
+	// Get or create a lock for this specific hash to prevent duplicate scraping
+	hashLock := ts.getOrCreateHashLock(infoHashStr)
+
+	// Acquire the lock for this hash
+	hashLock.Lock()
+	defer func() {
+		hashLock.Unlock()
+		// Clean up the lock if possible (non-blocking)
+		go ts.cleanupHashLock(infoHashStr)
+	}()
+
+	log.Printf("Acquired lock for request processing: %s", infoHashStr)
+
+	// Check cache after acquiring lock (another request might have filled it)
+	if cached, err := ts.getCachedMetadata(infoHashStr); cached != nil && err == nil {
+		log.Printf("Cache hit after lock acquisition for info hash: %s", infoHashStr)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(cached)
+		return
+	}
+
+	log.Printf("Cache miss after lock acquisition, proceeding with scraping: %s", infoHashStr)
+
 	type result struct {
 		metadata any
 		err      error
@@ -403,7 +415,7 @@ func (ts *TorrentService) handleGetMetadata(w http.ResponseWriter, r *http.Reque
 	resultCh := make(chan result, 2)
 
 	go func() {
-		metadata, err := ts.getTorrentMetadata(ctx, req.MagnetURI)
+		metadata, err := ts.getTorrentMetadata(ctx, infoHashStr)
 		select {
 		case resultCh <- result{metadata, err}:
 		case <-ctx.Done():
@@ -411,7 +423,7 @@ func (ts *TorrentService) handleGetMetadata(w http.ResponseWriter, r *http.Reque
 	}()
 
 	go func() {
-		metadata, err := ts.getMetadataFromITorrents(req.MagnetURI)
+		metadata, err := ts.getMetadataFromITorrents(infoHashStr)
 		select {
 		case resultCh <- result{metadata, err}:
 		case <-ctx.Done():

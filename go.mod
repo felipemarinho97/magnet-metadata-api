@@ -1,4 +1,4 @@
-module github.com/felipemarinho97/torrent-2-magnet
+module github.com/felipemarinho97/magnet-metadata-api
 
 go 1.24.4
 
