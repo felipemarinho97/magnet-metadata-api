@@ -1,6 +1,6 @@
 #####################################################
 ### Copy platform specific binary
-FROM bash as copy-binary
+FROM bash AS copy-binary
 ARG TARGETPLATFORM
 
 RUN echo "Target Platform = ${TARGETPLATFORM}"
@@ -16,7 +16,7 @@ RUN chmod +x /magnet-metadata-api
 
 #####################################################
 ### Build Final Image
-FROM alpine as release
+FROM alpine AS release
 LABEL maintainer="felipevm97@gmail.com"
 
 COPY --from=copy-binary /magnet-metadata-api /app/
