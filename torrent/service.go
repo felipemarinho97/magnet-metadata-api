@@ -119,7 +119,7 @@ func NewTorrentService(config *config.Config) (*TorrentService, error) {
 		if size, err := strconv.Atoi(initialChunkSizeStr); err == nil && size > 0 {
 			initialChunkSize = size * 1024 // Convert to bytes
 		} else {
-			log.Printf("Invalid FALLBACK_INITIAL_CHUNK_SIZE_KB value: %s, using default", initialChunkSize/1024)
+			log.Printf("Invalid FALLBACK_INITIAL_CHUNK_SIZE_KB value: %d, using default", initialChunkSize/1024)
 		}
 	}
 
