@@ -422,7 +422,7 @@ func (ts *TorrentService) handleGetMetadata(w http.ResponseWriter, r *http.Reque
 	resultCh := make(chan result, 2)
 
 	go func() {
-		metadata, err := ts.getTorrentMetadata(ctx, infoHashStr)
+		metadata, err := ts.getTorrentMetadata(ctx, req.MagnetURI)
 		select {
 		case resultCh <- result{metadata, err}:
 		case <-ctx.Done():

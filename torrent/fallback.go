@@ -3,6 +3,7 @@ package torrent
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -65,6 +66,10 @@ var (
 	maxHeaderSize = 512 * 1024 // 512KB
 	// Chunk increment size
 	chunkIncrement = initialChunkSize
+
+	// Rate limiter for iTorrents requests
+	// Conservative: 10 requests per second with burst of 20
+	iTorrentsRateLimiter = NewRateLimiter(10.0, 20)
 )
 
 var iTorrentsClient = &http.Client{
@@ -82,6 +87,14 @@ var iTorrentsClient = &http.Client{
 }
 
 func (ts *TorrentService) getMetadataFromITorrents(infoHash string) (*model.TorrentMetadata, error) {
+	// Rate limit the request
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := iTorrentsRateLimiter.Wait(ctx); err != nil {
+		return nil, fmt.Errorf("[fallback] rate limiter timeout: %w", err)
+	}
+
 	// Convert info hash to uppercase hex format
 	infoHashHex := strings.ToUpper(infoHash)
 
@@ -116,12 +129,19 @@ func (ts *TorrentService) getMetadataFromITorrents(infoHash string) (*model.Torr
 
 // fetchTorrentHeader fetches only the header portion of the torrent file
 func fetchTorrentHeader(url string) ([]byte, error) {
-
 	var allData bytes.Buffer
 	currentSize := initialChunkSize
 	start := 0
 
 	for currentSize <= maxHeaderSize {
+		// Apply rate limiting for each chunk request
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := iTorrentsRateLimiter.Wait(ctx); err != nil {
+			cancel()
+			return nil, fmt.Errorf("rate limiter timeout for chunk request: %w", err)
+		}
+		cancel()
+
 		// Try to fetch current chunk size
 		chunk, err := fetchChunk(iTorrentsClient, url, start, currentSize-1)
 		if err != nil {
@@ -430,4 +450,10 @@ func doWithBackoff(client *http.Client, req *http.Request, maxRetries int, baseD
 
 func randFloat64() float64 {
 	return float64(time.Now().UnixNano()%1000) / 1000.0
+}
+
+// UpdateITorrentsRateLimit allows dynamic adjustment of the rate limit
+func UpdateITorrentsRateLimit(requestsPerSecond float64, burstSize int) {
+	iTorrentsRateLimiter.UpdateLimit(requestsPerSecond, burstSize)
+	log.Printf("[rate-limiter] Updated iTorrents rate limit to %.2f req/s with burst %d", requestsPerSecond, burstSize)
 }
