@@ -58,13 +58,13 @@ type PartialTorrentFile struct {
 	Info         PartialTorrentInfo `bencode:"info"`
 }
 
-const (
+var (
 	// Initial chunk size - should be enough for most torrent headers
 	initialChunkSize = 6 * 1024 // 6KB
 	// Maximum total size we're willing to download
 	maxHeaderSize = 512 * 1024 // 512KB
 	// Chunk increment size
-	chunkIncrement = 6 * 1024 // 6KB
+	chunkIncrement = initialChunkSize
 )
 
 var iTorrentsClient = &http.Client{

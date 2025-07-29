@@ -114,6 +114,15 @@ func NewTorrentService(config *config.Config) (*TorrentService, error) {
 		}
 	}()
 
+	initialChunkSizeStr := os.Getenv("FALLBACK_INITIAL_CHUNK_SIZE_KB")
+	if initialChunkSizeStr != "" {
+		if size, err := strconv.Atoi(initialChunkSizeStr); err == nil && size > 0 {
+			initialChunkSize = size * 1024 // Convert to bytes
+		} else {
+			log.Printf("Invalid FALLBACK_INITIAL_CHUNK_SIZE_KB value: %s, using default", initialChunkSize/1024)
+		}
+	}
+
 	service := &TorrentService{
 		config:      config,
 		client:      client,
